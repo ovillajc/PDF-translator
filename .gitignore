@@ -1,0 +1,11 @@
+.env
+.src_root_backup
+.venv
+
+# Caché de Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Sistema
+.DS_Store
