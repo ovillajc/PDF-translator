@@ -40,80 +40,104 @@ def extract_page_blocks(page: fitz.Page, page_num: int, in_references: bool) -> 
             if (fitz.Rect(b["bbox"]) & rect).get_area()
             > 0.25 * max(1.0, fitz.Rect(b["bbox"]).get_area())
         ]
+        candidate_rects = [rect]
         if overlapping_dicts:
+            code_dicts = [b for b in overlapping_dicts if is_code_or_math_dict_block(b)]
             non_code_dicts = [b for b in overlapping_dicts if not is_code_or_math_dict_block(b)]
             if not non_code_dicts:
                 continue
-            if len(non_code_dicts) < len(overlapping_dicts):
-                u = fitz.Rect(non_code_dicts[0]["bbox"])
-                for b in non_code_dicts[1:]:
-                    u |= fitz.Rect(b["bbox"])
-                rect = u & rect
+            if code_dicts:
+                # Si la caja mezcla código y texto (ej. un listado con título arriba y párrafo abajo),
+                # conservar únicamente títulos tipo "Listing X.Y" o párrafos de ancho completo
+                # arriba/abajo del código, dejando intactos el código y sus etiquetas/flechas internas.
+                code_union = fitz.Rect(code_dicts[0]["bbox"])
+                for cb in code_dicts[1:]:
+                    code_union |= fitz.Rect(cb["bbox"])
 
-        raw_txt = page.get_text("text", clip=rect, sort=True).strip()
-        clean_txt = normalize_block_text(raw_txt)
+                candidate_rects = []
+                for nb in non_code_dicts:
+                    nb_r = fitz.Rect(nb["bbox"])
+                    nb_txt = "".join(
+                        s.get("text", "") for l in nb.get("lines", []) for s in l.get("spans", [])
+                    ).strip()
+                    is_listing_title = nb_txt.lower().startswith(("listing ", "table ", "figure "))
+                    is_full_prose = nb_r.width >= (rect.width * 0.65)
+                    if nb_r.y1 <= code_union.y0 + 3.0 and (is_listing_title or is_full_prose):
+                        candidate_rects.append(nb_r & rect)
+                    elif nb_r.y0 >= code_union.y1 - 3.0 and is_full_prose:
+                        # Unir líneas consecutivas de un mismo párrafo debajo del código
+                        if candidate_rects and abs(nb_r.y0 - candidate_rects[-1].y1) < 12.0 and abs(nb_r.x0 - candidate_rects[-1].x0) < 15.0:
+                            candidate_rects[-1] |= (nb_r & rect)
+                        else:
+                            candidate_rects.append(nb_r & rect)
+                if not candidate_rects:
+                    continue
 
-        if label == "section-header":
-            header_key = clean_txt.lower().strip("0123456789. ")
-            if header_key in ("references", "bibliography", "bibliografía", "referencias"):
-                in_references = True
+        for sub_rect in candidate_rects:
+            raw_txt = page.get_text("text", clip=sub_rect, sort=True).strip()
+            clean_txt = normalize_block_text(raw_txt)
+
+            if label == "section-header":
+                header_key = clean_txt.lower().strip("0123456789. ")
+                if header_key in ("references", "bibliography", "bibliografía", "referencias"):
+                    in_references = True
+                else:
+                    in_references = False
+
+            if not is_translatable_text(clean_txt, page_num, in_references):
+                continue
+
+            style = extract_dominant_style(dict_blocks, sub_rect, label, page.rect.width)
+
+            # Calcular caja de inserción (insert_rect) expandiendo encabezados hacia el espacio vacío
+            # de su columna para evitar que palabras más largas en español reduzcan la fuente.
+            insert_rect = fitz.Rect(sub_rect)
+            if label in ("section-header", "title") or style["lines"] == 1:
+                if style["align"] == "left":
+                    col_right = (
+                        page.rect.width * 0.485
+                        if (sub_rect.x0 < page.rect.width * 0.48 and sub_rect.x1 < page.rect.width * 0.52)
+                        else page.rect.width - 48.0
+                    )
+                    max_x1 = max(sub_rect.x1, col_right)
+                    for other_i, other_r in enumerate(all_box_rects):
+                        if (
+                            other_i != idx_b
+                            and other_r.y1 > sub_rect.y0 + 1
+                            and other_r.y0 < sub_rect.y1 - 1
+                            and other_r.x0 >= sub_rect.x1 - 2
+                        ):
+                            max_x1 = min(max_x1, other_r.x0 - 4.0)
+                    insert_rect.x1 = max(sub_rect.x1, max_x1)
+                elif style["align"] == "center":
+                    cx = (sub_rect.x0 + sub_rect.x1) / 2.0
+                    half_w = max(sub_rect.width / 2.0, 70.0)
+                    insert_rect.x0 = cx - half_w
+                    insert_rect.x1 = cx + half_w
+                insert_rect.y0 -= 1.5
+                insert_rect.y1 += 2.5
             else:
-                in_references = False
-
-        if not is_translatable_text(clean_txt, page_num, in_references):
-            continue
-
-        style = extract_dominant_style(dict_blocks, rect, label, page.rect.width)
-
-        # Calcular caja de inserción (insert_rect) expandiendo encabezados hacia el espacio vacío
-        # de su columna para evitar que palabras más largas en español reduzcan la fuente.
-        insert_rect = fitz.Rect(rect)
-        if label in ("section-header", "title") or style["lines"] == 1:
-            if style["align"] == "left":
-                col_right = (
-                    page.rect.width * 0.485
-                    if (rect.x0 < page.rect.width * 0.48 and rect.x1 < page.rect.width * 0.52)
-                    else page.rect.width - 48.0
-                )
-                max_x1 = max(rect.x1, col_right)
+                max_y1 = sub_rect.y1 + 5.0
                 for other_i, other_r in enumerate(all_box_rects):
                     if (
                         other_i != idx_b
-                        and other_r.y1 > rect.y0 + 1
-                        and other_r.y0 < rect.y1 - 1
-                        and other_r.x0 >= rect.x1 - 2
+                        and other_r.x1 > sub_rect.x0 + 5
+                        and other_r.x0 < sub_rect.x1 - 5
+                        and other_r.y0 >= sub_rect.y1 - 2
                     ):
-                        max_x1 = min(max_x1, other_r.x0 - 4.0)
-                insert_rect.x1 = max(rect.x1, max_x1)
-            elif style["align"] == "center":
-                cx = (rect.x0 + rect.x1) / 2.0
-                half_w = max(rect.width / 2.0, 70.0)
-                insert_rect.x0 = cx - half_w
-                insert_rect.x1 = cx + half_w
-            insert_rect.y0 -= 1.5
-            insert_rect.y1 += 2.5
-        else:
-            max_y1 = rect.y1 + 5.0
-            for other_i, other_r in enumerate(all_box_rects):
-                if (
-                    other_i != idx_b
-                    and other_r.x1 > rect.x0 + 5
-                    and other_r.x0 < rect.x1 - 5
-                    and other_r.y0 >= rect.y1 - 2
-                ):
-                    max_y1 = min(max_y1, other_r.y0 - 1.5)
-            insert_rect.y0 -= 1.0
-            insert_rect.y1 = max(rect.y1 + 1.0, max_y1)
+                        max_y1 = min(max_y1, other_r.y0 - 1.5)
+                insert_rect.y0 -= 1.0
+                insert_rect.y1 = max(sub_rect.y1 + 1.0, max_y1)
 
-        items.append(
-            {
-                "redact_rect": rect,
-                "insert_rect": insert_rect,
-                "label": label,
-                "text": clean_txt,
-                "style": style,
-            }
-        )
+            items.append(
+                {
+                    "redact_rect": sub_rect,
+                    "insert_rect": insert_rect,
+                    "label": label,
+                    "text": clean_txt,
+                    "style": style,
+                }
+            )
 
     return items, in_references
 

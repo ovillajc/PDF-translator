@@ -12,6 +12,8 @@ class TranslationCache:
             os.makedirs(cache_dir, exist_ok=True)
             cache_path = os.path.join(cache_dir, "translations_cache.sqlite3")
         self.conn = sqlite3.connect(cache_path)
+        self.conn.execute("PRAGMA journal_mode=WAL;")
+        self.conn.execute("PRAGMA synchronous=NORMAL;")
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS translations ("
             "  key TEXT PRIMARY KEY,"

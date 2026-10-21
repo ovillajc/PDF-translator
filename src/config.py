@@ -79,6 +79,20 @@ STANDARD_HEADERS_ES = {
     "table of contents": "Contenido",
     "contents": "Contenido",
     "index": "Índice",
+    "overview": "Descripción general",
+    "key takeaways": "Puntos clave",
+    "takeaways": "Puntos clave",
+    "exercises": "Ejercicios",
+    "further reading": "Lecturas adicionales",
+    "notes": "Notas",
+    "note": "Nota",
+    "warning": "Advertencia",
+    "tip": "Consejo",
+    "this outputs": "Esto produce",
+    "the output is": "La salida es",
+    "the code prints": "El código imprime",
+    "here is a teaser": "Aquí hay un adelanto",
+    "here’s a teaser": "Aquí hay un adelanto",
 }
 
 # Clases del analizador neuronal de layout (pymupdf.layout)
